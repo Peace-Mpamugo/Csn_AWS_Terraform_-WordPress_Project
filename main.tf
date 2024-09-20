@@ -1,4 +1,3 @@
-# main.tf
 # VPC creation
 resource "aws_vpc" "main_vpc" {
   cidr_block = var.vpc_cidr
@@ -9,15 +8,29 @@ resource "aws_vpc" "main_vpc" {
 
 # Public Subnet
 resource "aws_subnet" "public_subnet" {
-  vpc_id     = aws_vpc.main_vpc.id
-  cidr_block = var.subnet_cidr
-  availability_zone = "us-east-1a" # Choose an availability zone
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.1.0/24"
   map_public_ip_on_launch = true
+  availability_zone       = "us-east-1a"
 }
 
+#Private Subnet
+resource "aws_subnet" "private_subnet" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.2.0/24"
+  availability_zone = "us-east-1a"
+}
+
+
 # Security Group for ECS
+resource "aws_vpc" "main" {
+  cidr_block = "10.0.0.0/16"
+}
+
 resource "aws_security_group" "ecs_security_group" {
-  vpc_id = aws_vpc.main_vpc.id
+  name        = "ecs_security_group"
+  description = "Allow access to ECS services"
+  vpc_id     = aws_vpc.main.id
 
   ingress {
     from_port   = 80
@@ -29,14 +42,23 @@ resource "aws_security_group" "ecs_security_group" {
   egress {
     from_port   = 0
     to_port     = 0
-    protocol    = "-1"
+    protocol    = "-1"  # All traffic
     cidr_blocks = ["0.0.0.0/0"]
   }
-
-  tags = {
-    Name = "ecs-sg"
-  }
 }
+
+# RDS MySQL Database
+resource "aws_db_instance" "wordpress_db" {
+  identifier          = "wordpress-db"
+  engine             = "mysql"
+  instance_class      = "db.t2.micro"
+  allocated_storage    = 20
+  username            = "admin"
+  password            = var.db_password
+  db_name             = "wordpress"
+  vpc_security_group_ids = [aws_security_group.ecs_security_group.id]
+}
+
 
 # Application Load Balancer
 resource "aws_lb" "wordpress_alb" {
@@ -92,7 +114,7 @@ resource "aws_ecs_task_definition" "wordpress_task" {
     "environment": [
       {
         "name": "WORDPRESS_DB_HOST",
-        "value": "${aws_rds_instance.wordpress_db.address}"
+        "value": "${aws_db_instance.wordpress_db.address}"
       },
       {
         "name": "WORDPRESS_DB_PASSWORD",
@@ -121,21 +143,27 @@ resource "aws_ecs_service" "wordpress_service" {
   }
 }
 
-# RDS MySQL Database
-resource "aws_db_instance" "wordpress_db" {
-  allocated_storage    = 20
-  engine               = "mysql"
-  instance_class       = "db.t2.micro"
-  name                 = "wordpressdb"
-  username             = "admin"
-  password             = var.db_password
-  parameter_group_name = "default.mysql5.7"
-  skip_final_snapshot  = true
-  publicly_accessible  = false
+#Creating Ecs IAM Role Root module task execution
+resource "aws_iam_role" "ecs_task_execution_role" {
+  name = "ecsTaskExecutionRole"
 
-  vpc_security_group_ids = [aws_security_group.ecs_security_group.id]
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Principal = {
+          Service = "ecs-tasks.amazonaws.com"
+        }
+        Effect = "Allow"
+        Sid = ""
+      }
+    ]
+  })
+}
 
-  tags = {
-    Name = "wordpress-rds"
-  }
+resource "aws_iam_policy_attachment" "ecs_task_execution_role_policy_attachment" {
+  name       = "ecsTaskExecutionRolePolicyAttachment"
+  roles      = [aws_iam_role.ecs_task_execution_role.name]
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
